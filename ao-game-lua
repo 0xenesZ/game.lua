@@ -1,130 +1,36 @@
 -- Game Variables
-successText = 'Success'
-failedText = "Failed"
-rankList = rankList or {}
-pointsList = pointsList or {}
-members = members or {}
-gameTimeTag = gameTimeTag or ""
-cards = { "Bonus 100", "Bonus 200", "Bonus 300", "Extra Roll", "Lose 100", "Lose 200", "Lose 300", "Swap Points", "Double Points" }
-turnOrder = turnOrder or {}  -- Oyuncuların sırası
-currentTurnIndex = currentTurnIndex or 1  -- Şu anki oyuncunun sırası
-timeout = 60  -- 60 saniye (1 dakika) zaman aşımı
-timer = nil  -- Zamanlayıcıyı saklamak için
+local cards = { "Bonus 100", "Bonus 200", "Bonus 300", "Extra Roll", "Lose 100", "Lose 200", "Lose 300", "Swap Points", "Double Points" }
+local successText = 'Success'
+local failedText = 'Failed'
+local timeout = 60  -- 60 saniye (1 dakika) zaman aşımı
+local timer = nil  -- Zamanlayıcıyı saklamak için
+local members = {}
+local pointsList = {}
+local rankList = {}
+local currentTurnIndex = 1
 
-local function guid()
-    local seed = { 'e', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'l', 'z', 't', 'f' }
-    local tb = {}
-    for i = 1, 32 do
-        table.insert(tb, seed[math.random(1, 16)])
-    end
-    local sid = table.concat(tb)
-    return string.format('%s-%s-%s-%s-%s',
-            string.sub(sid, 1, 8),
-            string.sub(sid, 9, 12),
-            string.sub(sid, 13, 16),
-            string.sub(sid, 17, 20),
-            string.sub(sid, 21, 32)
-    )
-end
-
-local function getDiceNumber()
-    return math.random(1, 6)
-end
-
-local function getDiceText(num)
-    return num > 1 and successText or failedText
-end
-
-local function getCard()
-    return cards[math.random(1, #cards)]
-end
-
-local function getMembers()
-    local memberList = {}
-    for id, _ in pairs(members) do
-        table.insert(memberList, id)
-    end
-    return memberList
-end
-
-local function addMember(id)
-    if not members[id] then
-        members[id] = true
-        table.insert(turnOrder, id)
-    end
-end
-
-local function getNextTurn()
-    currentTurnIndex = currentTurnIndex + 1
-    if currentTurnIndex > #turnOrder then
-        currentTurnIndex = 1
-    end
-    return turnOrder[currentTurnIndex]
-end
-
-local function getCurrentTurn()
-    return turnOrder[currentTurnIndex]
-end
-
-local function joinStatistic(id)
-    addMember(id)
-end
-
-local function getPersonPoints(id)
-    return pointsList[id] or 0
-end
-
-local function sortRankList()
-    table.sort(rankList, function(a, b)
-        return a.points > b.points
-    end)
-end
-
-local function getGameTimeTag()
-    local currentTime = os.date("*t", os.time())
-    return currentTime.year .. '-' .. currentTime.month
-end
-
-local function checkRankExpire()
-    local currentTag = getGameTimeTag()
-    if gameTimeTag ~= currentTag then
-        for i = 1, 10 do
-            if rankList[i] and rankList[i].pid then
-                ao.send({ Target = ao.id, Action = "Transfer", Recipient = rankList[i].pid, Quantity = tostring(100 - (i - 1) * 10) })
-            end
-        end
-        rankList = {}
-        gameTimeTag = currentTag
-    end
-end
-
-local function log(message)
-    print("[LOG] " .. message)
+local function getRandomElement(list)
+    return list[math.random(1, #list)]
 end
 
 local function calculatePoints(diceNumber, cardText, points)
-    if not diceNumber or not cardText then
-        log("Invalid dice number or card text")
-        return points
-    end
-    if (diceNumber > 1) then
-        points = points + diceNumber
+    if diceNumber > 1 then
         if cardText == "Bonus 100" then
-            points = points + 10
+            points = points + 110
         elseif cardText == "Bonus 200" then
-            points = points + 20
+            points = points + 220
         elseif cardText == "Bonus 300" then
-            points = points + 30
+            points = points + 330
         elseif cardText == "Lose 100" then
-            points = points - 10
+            points = points - 90
         elseif cardText == "Lose 200" then
-            points = points - 20
+            points = points - 190
         elseif cardText == "Lose 300" then
-            points = points - 30
+            points = points - 290
         elseif cardText == "Extra Roll" then
-            points = points + diceNumber
+            points = points + diceNumber * 2
         elseif cardText == "Swap Points" then
-            local swapId = getMembers()[math.random(1, #getMembers())]
+            local swapId = getRandomElement(getMembers())
             points, pointsList[swapId] = pointsList[swapId], points
         elseif cardText == "Double Points" then
             points = points * 2
@@ -135,194 +41,75 @@ local function calculatePoints(diceNumber, cardText, points)
     return points
 end
 
+local function getNextTurn()
+    currentTurnIndex = currentTurnIndex % #turnOrder + 1
+    return turnOrder[currentTurnIndex]
+end
+
 local function startTimer()
-    if timer then
-        timer:stop()
-    end
+    if timer then timer:stop() end
     timer = uv.new_timer()
     timer:start(timeout * 1000, 0, function()
-        log("Turn skipped due to timeout")
+        print("[LOG] Turn skipped due to timeout")
         skipTurn()
     end)
 end
 
-local function skipTurn()
-    local nextTurn = getNextTurn()
+-- Handler Functions
+
+local function handleRollDiceAndDrawCard(Msg)
+    local currentTurn = getCurrentTurn()
+    if Msg.From ~= currentTurn then
+        ao.send({ Target = Msg.From, Action = "Error", Data = "It's not your turn!" })
+        return
+    end
+
+    if timer then timer:stop() end
+    
+    local diceNumber = math.random(1, 6)
+    local diceText = diceNumber > 1 and successText or failedText
+    local cardText = getRandomElement(cards)
+    local points = (pointsList[Msg.From] or 0) + diceNumber
+    points = calculatePoints(diceNumber, cardText, points)
+    
+    pointsList[Msg.From] = points
+    members[Msg.From] = true
+    
     ao.send({
-        Target = nextTurn,
-        Action = "YourTurn",
-        Data = "It's your turn now!"
+        Target = Msg.From,
+        Action = "RollDiceAndDrawCardResult",
+        Data = "Dice: " .. diceText .. ", Card: " .. cardText .. ", Total Points: " .. points
     })
+    
+    local nextTurn = getNextTurn()
+    ao.send({ Target = nextTurn, Action = "YourTurn", Data = "It's your turn now!" })
     startTimer()
 end
 
--- Handler Functions
-
--- Get All Rank List
-Handlers.add(
-    "HandlerGetRank",
-    Handlers.utils.hasMatchingTag("Action", "GetRank"),
-    function(Msg)
-        log("HandlerGetRank called")
-        if #rankList == 0 then
-            ao.send({
-                Target = Msg.From,
-                Action = "RankList",
-                Data = "rankList : No Any Person"
-            })
-            return
-        end
-
-        checkRankExpire()
-        local page = tonumber(Msg.Data)
-        if (page == nil) then
-            page = 1
-        end
-        local startPos = (page - 1) * 10 + 1
-        if (startPos > #rankList) then
-            startPos = 1
-        end
-        local endPos = startPos + 10
-        local maxPos = math.min(endPos, #rankList)
-        local retText = ''
-        for i = startPos, maxPos do
-            retText = retText .. 'Rank ' .. i .. " : " .. rankList[i].name .. " " .. rankList[i].points
-            if startPos ~= maxPos then
-                retText = retText .. '\n'
-            end
-        end
-        ao.send({
-            Target = Msg.From,
-            Action = "RankList",
-            Data = retText
-        })
-    end
-)
-
--- Get Current Points
-Handlers.add(
-    "HandlerGetPoints",
-    Handlers.utils.hasMatchingTag("Action", "GetPoints"),
-    function(Msg)
-        log("HandlerGetPoints called")
-        local text = getPersonPoints(Msg.From)
-        log(text .. " Points")
-        ao.send({
-            Target = Msg.From,
-            Action = "CurrentPoints",
-            Data = text .. ""
-        })
-    end
-)
-
--- Finish Current Points
-Handlers.add(
-    "HandlerFinishPoints",
-    Handlers.utils.hasMatchingTag("Action", "FinishPoints"),
-    function(Msg)
-        log("HandlerFinishPoints called")
-        checkRankExpire()
-        local uuid = guid()
-        table.insert(rankList, {
-            points = pointsList[Msg.From],
-            name = Msg.Data,
-            uuid = uuid,
-            pid = Msg.From
-        })
-        sortRankList()
-        pointsList[Msg.From] = 0
-        local current = "Unknown"
-        for index, obj in pairs(rankList) do
-            if obj.uuid == uuid then
-                current = index
-                break
-            end
-        end
-
-        ao.send({
-            Target = Msg.From,
-            Action = "FinishPointsResult",
-            Data = "Hey! You ranked " .. current
-        })
-    end
-)
-
--- Roll Dice and Draw Card
 Handlers.add(
     "HandlerRollDiceAndDrawCard",
     Handlers.utils.hasMatchingTag("Action", "RollDiceAndDrawCard"),
-    function(Msg)
-        log("HandlerRollDiceAndDrawCard called")
-        
-        local currentTurn = getCurrentTurn()
-        if Msg.From ~= currentTurn then
-            ao.send({
-                Target = Msg.From,
-                Action = "Error",
-                Data = "It's not your turn!"
-            })
-            return
-        end
-
-        if timer then
-            timer:stop()
-        end
-        
-        local diceNumber = getDiceNumber()
-        local diceText = getDiceText(diceNumber)
-        local cardText = getCard()
-        
-        local points = getPersonPoints(Msg.From)
-        points = calculatePoints(diceNumber, cardText, points)
-        
-        pointsList[Msg.From] = points
-        joinStatistic(Msg.From)
-        
-        ao.send({
-            Target = Msg.From,
-            Action = "RollDiceAndDrawCardResult",
-            Data = "Dice: " .. diceText .. ", Card: " .. cardText .. ", Total Points: " .. points
-        })
-        
-        local nextTurn = getNextTurn()
-        ao.send({
-            Target = nextTurn,
-            Action = "YourTurn",
-            Data = "It's your turn now!"
-        })
-        startTimer()
-    end
+    handleRollDiceAndDrawCard
 )
 
--- Join Game
 Handlers.add(
     "HandlerJoinGame",
     Handlers.utils.hasMatchingTag("Action", "JoinGame"),
     function(Msg)
-        log("HandlerJoinGame called")
-        addMember(Msg.From)
-        ao.send({
-            Target = Msg.From,
-            Action = "JoinGameResult",
-            Data = "You have joined the game!"
-        })
+        members[Msg.From] = true
+        ao.send({ Target = Msg.From, Action = "JoinGameResult", Data = "You have joined the game!" })
     end
 )
 
--- Get All Members
 Handlers.add(
     "HandlerGetMembers",
     Handlers.utils.hasMatchingTag("Action", "GetMembers"),
     function(Msg)
-        local membersList = getMembers()
         local retText = 'Members:\n'
-        for i, member in ipairs(membersList) do
+        for i, member in ipairs(members) do
             retText = retText .. i .. ": " .. member .. "\n"
         end
-        ao.send({
-            Target = Msg.From,
-            Action = "MembersList",
-            Data = retText
-        })
+        ao.send({ Target = Msg.From, Action = "MembersList", Data = retText })
     end
 )
+
